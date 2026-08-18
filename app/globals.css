@@ -8,7 +8,7 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: #fbfaf7;
+  background: #fff5fa;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -29,7 +29,7 @@ button {
 textarea:focus,
 input:focus,
 button:focus-visible {
-  outline: 2px solid #1b2a4a;
+  outline: 2px solid #cc006e;
   outline-offset: 2px;
 }
 

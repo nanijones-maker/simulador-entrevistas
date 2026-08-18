@@ -11,17 +11,20 @@ import {
 } from "@/lib/plan";
 import { useLectura, useDictado } from "@/lib/voz";
 
+// Todos los pares que quedan uno sobre otro pasan contraste AA (4.5:1), y el
+// texto principal llega a 14:1. Si se tocan estos valores, conviene medirlo:
+// el fucsia clarito es muy fácil de dejar ilegible.
 const C = {
-  paper: "#FBFAF7",
-  page: "#FFFFFF",
-  ink: "#1B2A4A",
-  inkSoft: "#5A6B8C",
-  rule: "#DCE4F0",
-  margin: "#D6564A",
-  ok: "#2E6B54",
-  okBg: "#EDF4F0",
-  warnBg: "#FBF3EC",
-  warn: "#A5622A",
+  paper: "#FFF5FA", // fondo, rosa muy claro
+  page: "#FFFFFF", // tarjetas
+  ink: "#45092F", // texto principal, ciruela casi negro
+  inkSoft: "#8A4A72", // texto secundario, malva
+  rule: "#F4D2E5", // bordes y líneas
+  margin: "#CC006E", // fucsia fuerte: margen, error, punto del micrófono
+  ok: "#8E1B75", // logrado
+  okBg: "#FBE9F6",
+  warnBg: "#FFF0F3",
+  warn: "#AF3459", // avisos y pistas, rosa oscuro
 };
 
 const SERIF = 'Georgia, "Times New Roman", serif';
