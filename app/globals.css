@@ -63,3 +63,14 @@ button:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* Micrófono abierto. La consulta de reduced-motion de arriba lo apaga solo. */
+@keyframes pulso {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}

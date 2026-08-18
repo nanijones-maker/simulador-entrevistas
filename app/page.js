@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import {
   PLAN,
   PUESTOS,
@@ -9,6 +9,7 @@ import {
   MIN_CARACTERES,
   labelPuesto,
 } from "@/lib/plan";
+import { useLectura, useDictado } from "@/lib/voz";
 
 const C = {
   paper: "#FBFAF7",
@@ -65,8 +66,28 @@ export default function Page() {
   const [fallaComp, setFallaComp] = useState(false);
   const [copiado, setCopiado] = useState(false);
 
+  const [vozActiva, setVozActiva] = useState(false);
+
   const textareaRef = useRef(null);
   const anclaRef = useRef(null);
+  const leidaRef = useRef(""); // última pregunta leída, para no repetirla
+
+  const lectura = useLectura();
+
+  // Lo dictado se va sumando a lo que ya haya escrito, sin pisarlo.
+  const agregarDictado = useCallback((fragmento) => {
+    const t = String(fragmento || "").trim();
+    if (!t) return;
+    setAnswer((prev) => {
+      const sep = prev && !/\s$/.test(prev) ? " " : "";
+      // Mayúscula al empezar y después de un punto: el dictado no la pone.
+      const arranca = !prev.trim() || /[.!?…]\s*$/.test(prev);
+      const txt = arranca ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+      return prev + sep + txt;
+    });
+  }, []);
+
+  const dictado = useDictado({ onTexto: agregarDictado });
 
   // Al cambiar de pregunta, subir a la pregunta nueva. Sin robar el foco:
   // en el celular el teclado taparía la pregunta antes de que se lea.
@@ -76,11 +97,75 @@ export default function Page() {
     }
   }, [question, stage]);
 
+  function ajustarAlto() {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 340) + "px";
+  }
+
+  // También corre cuando el texto entra por dictado, no solo al tipear.
   useEffect(() => {
-    if (textareaRef.current && answer === "") {
-      textareaRef.current.style.height = "auto";
-    }
+    ajustarAlto();
   }, [answer, question]);
+
+  // Se sacan las funciones sueltas a propósito: son estables entre renders,
+  // así los efectos de abajo corren solo cuando cambia lo que importa. Si se
+  // dependiera del objeto entero, cada render cortaría la lectura en curso.
+  const { leer, parar: pararLectura, soportado: vozSoportada } = lectura;
+  const { parar: pararDictado, limpiarError: limpiarErrorDictado } = dictado;
+
+  // El aviso del micrófono es de la pregunta que se fue: no se arrastra.
+  useEffect(() => {
+    limpiarErrorDictado();
+  }, [question, limpiarErrorDictado]);
+
+  // Pregunta nueva con la voz prendida: se lee sola. El micrófono se apaga
+  // antes, así no se escucha a sí misma.
+  useEffect(() => {
+    if (stage !== "interview" || !question) return;
+    if (!vozActiva || !vozSoportada) return;
+    if (leidaRef.current === question) return;
+    leidaRef.current = question;
+    pararDictado();
+    leer(question);
+  }, [question, stage, vozActiva, vozSoportada, leer, pararDictado]);
+
+  // Al salir de la entrevista no queda nada hablando ni grabando.
+  useEffect(() => {
+    if (stage !== "interview") {
+      pararLectura();
+      pararDictado();
+    }
+  }, [stage, pararLectura, pararDictado]);
+
+  function escucharPregunta() {
+    if (lectura.hablando) return lectura.parar();
+    dictado.parar();
+    lectura.leer(question);
+  }
+
+  function alternarDictado() {
+    if (dictado.grabando) return dictado.parar();
+    lectura.parar();
+    dictado.arrancar();
+  }
+
+  // El toggle se prende con un toque, y ese toque es el gesto que iOS exige
+  // para dejar hablar al navegador. Por eso lee la pregunta ahí mismo.
+  function alternarVoz() {
+    if (vozActiva) {
+      setVozActiva(false);
+      lectura.parar();
+      return;
+    }
+    setVozActiva(true);
+    if (stage === "interview" && question) {
+      leidaRef.current = question;
+      dictado.parar();
+      lectura.leer(question);
+    }
+  }
 
   const puestoLabel = labelPuesto(puesto);
   const actual = PLAN[Math.min(planIdx, PLAN.length - 1)];
@@ -91,9 +176,7 @@ export default function Page() {
 
   function crecer(e) {
     setAnswer(e.target.value);
-    const el = e.target;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 340) + "px";
+    ajustarAlto();
   }
 
   async function start() {
@@ -126,6 +209,10 @@ export default function Page() {
   async function submit() {
     const a = answer.trim();
     if (!a || loading) return;
+
+    // Cerrar el micrófono antes de mandar: lo último dictado ya entró.
+    dictado.parar();
+    lectura.parar();
 
     // Empujón suave, una sola vez por pregunta. Nunca bloquea.
     if (cortita && !avisado && !fallo) {
@@ -298,6 +385,42 @@ export default function Page() {
     return l.join("\n");
   }
 
+  // Versión hablada de la devolución. No es el archivo entero: se saltea la
+  // entrevista completa, que escuchada de corrido son varios minutos.
+  function textoDevolucion() {
+    const l = [];
+    l.push(
+      nombre
+        ? `${nombre}, esta es tu devolución.`
+        : "Esta es tu devolución."
+    );
+    if (comp?.competencias?.length) {
+      comp.competencias.forEach((c) => {
+        l.push(`${c.nombre}: ${NIVELES[c.nivel] || ""}.`);
+        if (c.evidencia) l.push(c.evidencia);
+        if (c.para_subir) l.push(`Para subir: ${c.para_subir}`);
+      });
+    }
+    if (comp?.para_practicar) {
+      l.push("Lo que más te conviene practicar:");
+      l.push(comp.para_practicar);
+    }
+    if (sara?.reescritura) {
+      const r = sara.reescritura;
+      l.push("Una respuesta tuya, reescrita.");
+      if (r.situacion) l.push(`Situación: ${r.situacion}`);
+      if (r.accion) l.push(`Acción: ${r.accion}`);
+      if (r.resultado) l.push(`Resultado: ${r.resultado}`);
+      if (r.aprendizaje) l.push(`Aprendizaje: ${r.aprendizaje}`);
+    }
+    return l.join(" ");
+  }
+
+  function escucharDevolucion() {
+    if (lectura.hablando) return lectura.parar();
+    lectura.leer(textoDevolucion());
+  }
+
   async function copiar() {
     const txt = armarTexto();
     try {
@@ -343,6 +466,9 @@ export default function Page() {
   }
 
   function reset() {
+    lectura.parar();
+    dictado.parar();
+    leidaRef.current = "";
     setStage("setup");
     setApiMessages([]);
     setQuestion("");
@@ -403,7 +529,9 @@ export default function Page() {
               >
                 <Chip muted>8 preguntas</Chip>
                 <Chip muted>15 a 20 minutos</Chip>
-                <Chip muted>Se escribe, no se habla</Chip>
+                <Chip muted>
+                  {dictado.soportado ? "Hablando o escribiendo" : "Se escribe"}
+                </Chip>
               </div>
 
               <p
@@ -470,35 +598,34 @@ export default function Page() {
                 style={{ ...inputStyle, lineHeight: 1.5, resize: "vertical" }}
               />
 
-              <button
+              <Casilla
+                on={mostrarMarco}
                 onClick={() => setMostrarMarco(!mostrarMarco)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  background: "none",
-                  border: "none",
-                  padding: "10px 0",
-                  minHeight: 44,
-                  cursor: "pointer",
-                  color: C.ink,
-                  fontSize: 14,
-                  marginBottom: 16,
-                  textAlign: "left",
-                }}
-                aria-pressed={mostrarMarco}
               >
-                <span
-                  style={{
-                    width: 18,
-                    height: 18,
-                    border: `1px solid ${C.ink}`,
-                    background: mostrarMarco ? C.ink : "transparent",
-                    flexShrink: 0,
-                  }}
-                />
                 Mostrar qué evalúa cada pregunta mientras respondo
-              </button>
+              </Casilla>
+
+              {lectura.soportado && (
+                <Casilla on={vozActiva} onClick={alternarVoz}>
+                  Leerme las preguntas en voz alta
+                </Casilla>
+              )}
+
+              <div style={{ height: 16 }} />
+
+              {dictado.soportado ? (
+                <Note>
+                  Podés contestar hablando: en cada pregunta hay un botón de
+                  micrófono y lo que decís se escribe solo. Siempre podés
+                  corregir el texto a mano antes de mandarlo.
+                </Note>
+              ) : (
+                <Note>
+                  Este navegador no deja contestar hablando. Si lo querés
+                  probar, abrilo en Chrome, Edge o Safari. Escribiendo funciona
+                  igual.
+                </Note>
+              )}
 
               <PrimaryButton onClick={start}>
                 Empezar la entrevista
@@ -588,11 +715,36 @@ export default function Page() {
                       fontFamily: SERIF,
                       fontSize: "clamp(19px, 5.2vw, 22px)",
                       lineHeight: 1.45,
-                      margin: "0 0 22px",
+                      margin: "0 0 16px",
                     }}
                   >
                     {question}
                   </p>
+
+                  {lectura.soportado && question && (
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        marginBottom: 22,
+                      }}
+                    >
+                      <BotonVoz
+                        onClick={escucharPregunta}
+                        activo={lectura.hablando}
+                        title="Escuchar la pregunta"
+                      >
+                        {lectura.hablando
+                          ? "Parar la lectura"
+                          : "Escuchar la pregunta"}
+                      </BotonVoz>
+                      <Casilla on={vozActiva} onClick={alternarVoz}>
+                        Leer sola cada pregunta
+                      </Casilla>
+                    </div>
+                  )}
 
                   {loading ? (
                     <Typing text="Escuchando" />
@@ -602,7 +754,11 @@ export default function Page() {
                         ref={textareaRef}
                         value={answer}
                         onChange={crecer}
-                        placeholder="Escribí como hablarías. Después leelo en voz alta."
+                        placeholder={
+                          dictado.soportado
+                            ? "Contestá hablando con el botón de abajo, o escribí acá."
+                            : "Escribí como hablarías. Después leelo en voz alta."
+                        }
                         rows={4}
                         style={{
                           ...inputStyle,
@@ -613,6 +769,44 @@ export default function Page() {
                           overflow: "hidden",
                         }}
                       />
+
+                      {dictado.grabando && (
+                        <div
+                          aria-live="polite"
+                          style={{
+                            fontSize: 15,
+                            lineHeight: 1.6,
+                            color: C.inkSoft,
+                            fontStyle: "italic",
+                            padding: "8px 12px",
+                            marginTop: 8,
+                            borderLeft: `2px solid ${C.rule}`,
+                            minHeight: 24,
+                          }}
+                        >
+                          {dictado.parcial || "Te escucho…"}
+                        </div>
+                      )}
+
+                      {dictado.soportado && (
+                        <div style={{ marginTop: 12 }}>
+                          <BotonVoz
+                            onClick={alternarDictado}
+                            activo={dictado.grabando}
+                            title="Contestar hablando"
+                          >
+                            {dictado.grabando ? (
+                              <>
+                                <Pulso /> Listo, terminé
+                              </>
+                            ) : (
+                              "Contestar hablando"
+                            )}
+                          </BotonVoz>
+                        </div>
+                      )}
+
+                      {dictado.error && <Note>{dictado.error}</Note>}
 
                       {mostrarMarco && actual.tipo !== "apertura" && (
                         <div
@@ -909,6 +1103,13 @@ export default function Page() {
                   <SecondaryButton onClick={descargar}>
                     Descargar archivo
                   </SecondaryButton>
+                  {lectura.soportado && (comp || sara) && (
+                    <SecondaryButton onClick={escucharDevolucion}>
+                      {lectura.hablando
+                        ? "Parar la lectura"
+                        : "Escuchar la devolución"}
+                    </SecondaryButton>
+                  )}
                 </div>
               </Card>
             )}
@@ -1065,6 +1266,81 @@ function SectionTitle({ children }) {
     >
       {children}
     </div>
+  );
+}
+
+function Casilla({ on, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        background: "none",
+        border: "none",
+        padding: "10px 0",
+        minHeight: 44,
+        cursor: "pointer",
+        color: C.ink,
+        fontSize: 14,
+        textAlign: "left",
+      }}
+      aria-pressed={on}
+    >
+      <span
+        style={{
+          width: 18,
+          height: 18,
+          border: `1px solid ${C.ink}`,
+          background: on ? C.ink : "transparent",
+          flexShrink: 0,
+        }}
+      />
+      {children}
+    </button>
+  );
+}
+
+// Botón chico de texto, para los controles de voz al lado de la pregunta.
+function BotonVoz({ onClick, activo, children, title }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 7,
+        padding: "9px 13px",
+        minHeight: 40,
+        fontSize: 13,
+        cursor: "pointer",
+        borderRadius: 2,
+        border: `1px solid ${activo ? C.ink : C.rule}`,
+        background: activo ? C.ink : "transparent",
+        color: activo ? C.page : C.inkSoft,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Punto que late mientras el micrófono está abierto.
+function Pulso() {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: C.margin,
+        display: "inline-block",
+        animation: "pulso 1.2s ease-in-out infinite",
+      }}
+    />
   );
 }
 

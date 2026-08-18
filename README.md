@@ -2,6 +2,8 @@
 
 Simulador de entrevista laboral para gente que busca su primer trabajo. Ocho preguntas con formato de entrevista estructurada, repreguntas cuando la respuesta viene vaga, y devolución final por competencia.
 
+Se puede hacer hablando: la entrevista lee las preguntas en voz alta y las respuestas se pueden dictar. También funciona entera escribiendo.
+
 Next.js 15 (App Router). Sin base de datos: nada se guarda en el servidor.
 
 ---
@@ -73,9 +75,25 @@ Si el volumen es alto y querés bajar el costo, cambiá el modelo por Haiku agre
 
 Para algo más firme, en Vercel podés activar **Firewall → Bot protection** (Settings → Security), o mover el rate limit a Vercel KV.
 
-**Datos personales.** No se guarda nada: ni base de datos, ni cookies, ni logs de respuestas. Las respuestas viven en la memoria de la pestaña y se pierden al cerrarla. Por eso la devolución tiene botón de copiar y de descargar. Las respuestas sí pasan por la API de Anthropic para ser procesadas.
+**Datos personales.** No se guarda nada: ni base de datos, ni cookies, ni logs de respuestas. Las respuestas viven en la memoria de la pestaña y se pierden al cerrarla. Por eso la devolución tiene botón de copiar y de descargar. Las respuestas sí pasan por la API de Anthropic para ser procesadas, y si se usa el dictado, el audio pasa además por el navegador (ver abajo).
 
 **Menores de edad.** Si el link va a circular entre chicos de 16 o 17, revisá los términos de uso de la API y qué te pide la normativa de datos de menores antes de difundirlo.
+
+---
+
+## La voz
+
+Dos cosas separadas, las dos ya vienen en el navegador. No agregan costo de API ni una segunda clave: no pasan por Anthropic ni por tu servidor.
+
+**Leer en voz alta.** Botón para escuchar cada pregunta, más una casilla para que se lean solas a medida que aparecen. Al final también se puede escuchar la devolución. Anda en todos los navegadores.
+
+**Contestar hablando.** Botón de micrófono debajo del campo: lo que se dice se va escribiendo, y siempre se puede corregir a mano antes de mandar. Necesita Chrome, Edge o Safari. **En Firefox no existe**, y en ese caso la app lo dice y deja escribir normalmente.
+
+Los dos se apagan entre sí: mientras el micrófono está abierto no se lee nada en voz alta, así no se escucha a sí misma.
+
+**Dónde va a parar el audio.** Esta es la letra chica que conviene tener clara, porque es la única parte del proyecto que no cumple el "no sale de tu navegador": el dictado no lo hace la app, lo hace el navegador, y Chrome manda el audio a los servidores de Google para transcribirlo (Safari, a los de Apple). No pasa por tu servidor ni por Anthropic, y vos no lo ves nunca, pero sale del dispositivo. Si el link va a circular entre menores o el tema es sensible, tenelo en cuenta: escribiendo, el audio no existe.
+
+El acento se elige solo, con esta prioridad: rioplatense primero, después el resto de América Latina, España al final. Depende de las voces que tenga instalado el sistema de cada persona.
 
 ---
 
@@ -86,6 +104,7 @@ Para algo más firme, en Vercel podés activar **Firewall → Bot protection** (
 | Las 8 competencias, el orden, los puestos | `lib/plan.js` |
 | Cómo pregunta y cómo evalúa | `lib/prompts.js` |
 | Límites, rate limit, modelo | `app/api/claude/route.js` |
+| La voz: acento, velocidad, dictado | `lib/voz.js` |
 | Toda la interfaz y los textos | `app/page.js` |
 
 Después de cambiar algo: `git add . && git commit -m "..." && git push`. Vercel redeploya solo.
