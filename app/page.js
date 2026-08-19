@@ -1,15 +1,9 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import {
-  PLAN,
-  PUESTOS,
-  NIVELES,
-  MAX_TURNOS,
-  MIN_CARACTERES,
-  labelPuesto,
-} from "@/lib/plan";
+import { PLAN, PUESTOS, MIN_CARACTERES, labelPuesto } from "@/lib/plan";
 import { useLectura, useDictado } from "@/lib/voz";
+import { revisarEntrevista, usaMarcoSara } from "@/lib/revision";
 
 // Todos los pares que quedan uno sobre otro pasan contraste AA (4.5:1), y el
 // texto principal llega a 14:1. Si se tocan estos valores, conviene medirlo:
@@ -29,16 +23,6 @@ const C = {
 
 const SERIF = 'Georgia, "Times New Roman", serif';
 
-async function pedir(tipo, payload) {
-  const res = await fetch("/api/claude", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tipo, ...payload }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "falló");
-  return data;
-}
 
 export default function Page() {
   const [stage, setStage] = useState("setup");
@@ -47,26 +31,17 @@ export default function Page() {
   const [nombre, setNombre] = useState("");
   const [mostrarMarco, setMostrarMarco] = useState(true);
 
-  const [apiMessages, setApiMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [esRepregunta, setEsRepregunta] = useState(false);
   const [planIdx, setPlanIdx] = useState(0);
   const [turno, setTurno] = useState(0);
   const [answer, setAnswer] = useState("");
   const [transcript, setTranscript] = useState([]);
-  const [avisado, setAvisado] = useState(false);
 
   const [hint, setHint] = useState("");
-  const [hintLoading, setHintLoading] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [fallo, setFallo] = useState(false);
 
-  const [comp, setComp] = useState(null);
-  const [sara, setSara] = useState(null);
-  const [cargandoComp, setCargandoComp] = useState(false);
-  const [cargandoSara, setCargandoSara] = useState(false);
-  const [fallaComp, setFallaComp] = useState(false);
+  const [revision, setRevision] = useState(null);
   const [copiado, setCopiado] = useState(false);
 
   const [vozActiva, setVozActiva] = useState(false);
@@ -172,151 +147,86 @@ export default function Page() {
 
   const puestoLabel = labelPuesto(puesto);
   const actual = PLAN[Math.min(planIdx, PLAN.length - 1)];
-  const cortita =
-    answer.trim().length > 0 &&
-    answer.trim().length < MIN_CARACTERES &&
-    actual.tipo !== "apertura";
-
   function crecer(e) {
     setAnswer(e.target.value);
     ajustarAlto();
   }
 
-  async function start() {
+  // Sin red de por medio: la primera pregunta ya está en el guion.
+  function start() {
     setError("");
-    setFallo(false);
-    setLoading(true);
+    setPlanIdx(0);
+    setQuestion(PLAN[0].pregunta);
+    setEsRepregunta(false);
+    setTurno(1);
     setStage("interview");
-    try {
-      const msgs = [{ role: "user", content: "Arrancá la entrevista." }];
-      const r = await pedir("pregunta", {
-        messages: msgs,
-        idx: 0,
-        puesto,
-        aviso,
-        nombre,
-      });
-      setQuestion(r.texto);
-      setEsRepregunta(false);
-      setApiMessages([...msgs, { role: "assistant", content: r.texto }]);
-      setPlanIdx(0);
-      setTurno(1);
-    } catch (e) {
-      setError("No arrancó. Tocá de nuevo Empezar la entrevista.");
-      setStage("setup");
-    } finally {
-      setLoading(false);
-    }
   }
 
-  async function submit() {
+  function submit() {
     const a = answer.trim();
-    if (!a || loading) return;
+    if (!a) return;
 
     // Cerrar el micrófono antes de mandar: lo último dictado ya entró.
     dictado.parar();
     lectura.parar();
+    setError("");
 
-    // Empujón suave, una sola vez por pregunta. Nunca bloquea.
-    if (cortita && !avisado && !fallo) {
-      setAvisado(true);
+    // La repregunta sale cuando la respuesta viene corta, y una sola vez por
+    // pregunta: si ya estamos en la repregunta, se avanza sí o sí. Por eso
+    // nunca pueden salir dos seguidas.
+    const merece = a.length < MIN_CARACTERES && !esRepregunta;
+
+    if (merece) {
+      // Lo dicho hasta acá se guarda igual: la repregunta suma, no reemplaza.
+      setTranscript([
+        ...transcript,
+        { q: question, a, comp: actual.comp, tipo: actual.tipo, esRepregunta },
+      ]);
+      setAnswer("");
+      setHint("");
+      setEsRepregunta(true);
+      setQuestion(actual.repregunta);
+      setTurno(turno + 1);
       return;
     }
 
-    setError("");
-    setFallo(false);
+    // Cuando hubo repregunta, las dos partes se juntan en una sola respuesta:
+    // la devolución mira la historia completa, no cada mitad por separado.
+    const nuevaTranscript = esRepregunta
+      ? transcript.map((x, i) =>
+          i === transcript.length - 1
+            ? { ...x, q: PLAN[planIdx].pregunta, a: (x.a + " " + a).trim() }
+            : x
+        )
+      : [
+          ...transcript,
+          { q: question, a, comp: actual.comp, tipo: actual.tipo, esRepregunta },
+        ];
 
-    const entrada = {
-      q: question,
-      a,
-      comp: actual.comp,
-      tipo: actual.tipo,
-      esRepregunta,
-    };
-    const nuevaTranscript = [...transcript, entrada];
+    setTranscript(nuevaTranscript);
+    setAnswer("");
+    setHint("");
+    setTurno(turno + 1);
 
-    const terminada = planIdx >= PLAN.length - 1 || turno >= MAX_TURNOS;
-    if (terminada) {
-      setTranscript(nuevaTranscript);
-      setAnswer("");
-      setHint("");
+    if (planIdx >= PLAN.length - 1) {
+      setEsRepregunta(false);
       return cerrar(nuevaTranscript);
     }
 
-    setLoading(true);
-    try {
-      const msgs = [...apiMessages, { role: "user", content: a }];
-      const r = await pedir("pregunta", {
-        messages: msgs,
-        idx: Math.min(planIdx + 1, PLAN.length - 1),
-        puesto,
-        aviso,
-        nombre,
-      });
-      // nunca dos repreguntas seguidas
-      const avanza = r.accion !== "repregunta" || esRepregunta;
-      const nuevoIdx = avanza ? planIdx + 1 : planIdx;
-
-      // Recién acá se borra lo escrito: si falla, no se pierde nada.
-      setTranscript(nuevaTranscript);
-      setAnswer("");
-      setHint("");
-      setAvisado(false);
-      setPlanIdx(nuevoIdx);
-      setEsRepregunta(!avanza);
-      setQuestion(r.texto);
-      setApiMessages([...msgs, { role: "assistant", content: r.texto }]);
-      setTurno(turno + 1);
-    } catch (e) {
-      setError("Se cortó la conexión. Tu respuesta quedó guardada acá abajo.");
-      setFallo(true);
-    } finally {
-      setLoading(false);
-    }
+    const siguiente = planIdx + 1;
+    setPlanIdx(siguiente);
+    setEsRepregunta(false);
+    setQuestion(PLAN[siguiente].pregunta);
   }
 
   function cerrar(t) {
+    setRevision(revisarEntrevista(t));
     setStage("feedback");
-    setCargandoComp(true);
-    setCargandoSara(true);
-    setFallaComp(false);
-
-    const limpia = t.map((x) => ({
-      q: x.q,
-      a: x.a,
-      comp: x.comp,
-      tipo: x.tipo,
-    }));
-
-    // Las dos evaluaciones salen en paralelo y se muestran a medida que llegan.
-    pedir("competencias", { transcript: limpia, puesto, nombre })
-      .then(setComp)
-      .catch(() => setFallaComp(true))
-      .finally(() => setCargandoComp(false));
-
-    pedir("sara", { transcript: limpia, puesto })
-      .then(setSara)
-      .catch(() => {})
-      .finally(() => setCargandoSara(false));
   }
 
-  async function getHint() {
-    if (hintLoading) return;
-    setHintLoading(true);
-    setError("");
-    try {
-      const r = await pedir("pista", {
-        puesto,
-        comp: actual.comp,
-        formato: actual.tipo,
-        pregunta: question,
-      });
-      setHint(r.texto);
-    } catch (e) {
-      setError("La pista no cargó. Seguí con lo que tengas.");
-    } finally {
-      setHintLoading(false);
-    }
+  // La pista ya está escrita en el guion: sale al toque.
+  function getHint() {
+    setHint(actual.pista);
   }
 
   function armarTexto() {
@@ -327,49 +237,23 @@ export default function Page() {
     l.push(new Date().toLocaleDateString("es-AR"));
     l.push("");
 
-    if (comp?.competencias?.length) {
-      l.push("TU NIVEL POR COMPETENCIA");
-      l.push("");
-      comp.competencias.forEach((c) => {
-        l.push(`${c.nombre} — ${c.nivel}/4 (${NIVELES[c.nivel] || ""})`);
-        if (c.evidencia) l.push(c.evidencia);
-        if (c.para_subir) l.push(`Para subir: ${c.para_subir}`);
-        l.push("");
-      });
-    }
-
-    if (comp?.para_practicar) {
-      l.push("LO QUE MÁS TE CONVIENE PRACTICAR");
-      l.push(comp.para_practicar);
+    if (revision?.sugerencias?.length) {
+      l.push("PARA PRACTICAR");
+      revision.sugerencias.forEach((s) => l.push("- " + s));
       l.push("");
     }
 
-    if (sara?.analisis?.length) {
-      l.push("QUÉ LE FALTÓ A CADA RESPUESTA");
+    if (revision?.analisis?.length) {
+      l.push("QUÉ ENCONTRÓ LA REVISIÓN EN CADA RESPUESTA");
+      l.push(
+        "(Es una búsqueda de palabras clave hecha en tu navegador, no una evaluación. Se equivoca.)"
+      );
       l.push("");
-      sara.analisis.forEach((x) => {
-        const partes = [
-          x.situacion ? "Situación ok" : "falta Situación",
-          x.accion ? "Acción ok" : "falta Acción",
-          x.resultado ? "Resultado ok" : "falta Resultado",
-          x.aprendizaje ? "Aprendizaje ok" : "falta Aprendizaje",
-        ].join(" / ");
-        l.push(`${x.pregunta}: ${partes}`);
+      revision.analisis.forEach((x) => {
+        l.push(`${x.pregunta}: ${x.observaciones.join(" / ")}`);
         if (x.nota) l.push(x.nota);
         l.push("");
       });
-    }
-
-    if (sara?.reescritura) {
-      const r = sara.reescritura;
-      l.push("UNA RESPUESTA TUYA, REESCRITA");
-      l.push(r.pregunta || "");
-      if (r.situacion) l.push(`Situación: ${r.situacion}`);
-      if (r.accion) l.push(`Acción: ${r.accion}`);
-      if (r.resultado) l.push(`Resultado: ${r.resultado}`);
-      if (r.aprendizaje) l.push(`Aprendizaje: ${r.aprendizaje}`);
-      if (r.por_que) l.push(`Qué cambió: ${r.por_que}`);
-      l.push("");
     }
 
     if (transcript.length) {
@@ -388,6 +272,8 @@ export default function Page() {
     return l.join("\n");
   }
 
+  const puedeGuardar = transcript.length > 0 || !!revision;
+
   // Versión hablada de la devolución. No es el archivo entero: se saltea la
   // entrevista completa, que escuchada de corrido son varios minutos.
   function textoDevolucion() {
@@ -397,24 +283,16 @@ export default function Page() {
         ? `${nombre}, esta es tu devolución.`
         : "Esta es tu devolución."
     );
-    if (comp?.competencias?.length) {
-      comp.competencias.forEach((c) => {
-        l.push(`${c.nombre}: ${NIVELES[c.nivel] || ""}.`);
-        if (c.evidencia) l.push(c.evidencia);
-        if (c.para_subir) l.push(`Para subir: ${c.para_subir}`);
+    if (revision?.sugerencias?.length) {
+      l.push("Para practicar:");
+      revision.sugerencias.forEach((s) => l.push(s));
+    }
+    if (revision?.analisis?.length) {
+      l.push("Respuesta por respuesta.");
+      revision.analisis.forEach((x) => {
+        l.push(`${x.pregunta}: ${x.observaciones.join(", ")}.`);
+        if (x.nota) l.push(x.nota);
       });
-    }
-    if (comp?.para_practicar) {
-      l.push("Lo que más te conviene practicar:");
-      l.push(comp.para_practicar);
-    }
-    if (sara?.reescritura) {
-      const r = sara.reescritura;
-      l.push("Una respuesta tuya, reescrita.");
-      if (r.situacion) l.push(`Situación: ${r.situacion}`);
-      if (r.accion) l.push(`Acción: ${r.accion}`);
-      if (r.resultado) l.push(`Resultado: ${r.resultado}`);
-      if (r.aprendizaje) l.push(`Aprendizaje: ${r.aprendizaje}`);
     }
     return l.join(" ");
   }
@@ -473,25 +351,16 @@ export default function Page() {
     dictado.parar();
     leidaRef.current = "";
     setStage("setup");
-    setApiMessages([]);
     setQuestion("");
     setAnswer("");
     setPlanIdx(0);
     setTurno(0);
     setEsRepregunta(false);
     setTranscript([]);
-    setComp(null);
-    setSara(null);
+    setRevision(null);
     setHint("");
     setError("");
-    setFallo(false);
-    setAvisado(false);
-    setCargandoComp(false);
-    setCargandoSara(false);
-    setFallaComp(false);
   }
-
-  const listo = !cargandoComp && !cargandoSara;
 
   return (
     <main
@@ -546,9 +415,20 @@ export default function Page() {
                 }}
               >
                 Ocho preguntas, siempre las mismas, como en una entrevista
-                estructurada de verdad. Te van a repreguntar. Al final tenés tu
-                nivel en cada competencia, una respuesta tuya reescrita y todo
-                para guardar.
+                estructurada de verdad. Si una respuesta queda muy corta, te
+                repregunta. Al final te muestra tus respuestas con lo que quedó
+                afuera, y te las podés llevar.
+              </p>
+              <p
+                style={{
+                  margin: "12px 0 0",
+                  fontSize: 14,
+                  lineHeight: 1.65,
+                  color: C.inkSoft,
+                }}
+              >
+                Corre entero en tu navegador. No hay servidor, no hay cuenta y
+                tus respuestas no salen de esta pestaña.
               </p>
 
               <Label>¿Para qué tipo de puesto?</Label>
@@ -596,7 +476,7 @@ export default function Page() {
               <textarea
                 value={aviso}
                 onChange={(e) => setAviso(e.target.value)}
-                placeholder="Copiá la búsqueda a la que te querés postular. Las preguntas se ajustan a eso."
+                placeholder="Podés pegar la búsqueda como referencia mientras practicás."
                 rows={4}
                 style={{ ...inputStyle, lineHeight: 1.5, resize: "vertical" }}
               />
@@ -605,7 +485,7 @@ export default function Page() {
                 on={mostrarMarco}
                 onClick={() => setMostrarMarco(!mostrarMarco)}
               >
-                Mostrar qué evalúa cada pregunta mientras respondo
+                Mostrar qué mira cada pregunta mientras respondo
               </Casilla>
 
               {lectura.soportado && (
@@ -637,7 +517,7 @@ export default function Page() {
             </Card>
 
             <Card>
-              <SectionTitle>Qué se evalúa</SectionTitle>
+              <SectionTitle>Qué mira cada pregunta</SectionTitle>
               {PLAN.map((p, i) => (
                 <div
                   key={i}
@@ -687,10 +567,6 @@ export default function Page() {
             <div ref={anclaRef} style={{ scrollMarginTop: 12 }} />
             <Progress idx={planIdx} />
             <Card>
-              {loading && !question ? (
-                <Typing text="Preparando la entrevista" />
-              ) : (
-                <>
                   <div style={{ marginBottom: 14 }}>
                     <Eyebrow>
                       Pregunta {Math.min(planIdx + 1, PLAN.length)} de{" "}
@@ -749,10 +625,6 @@ export default function Page() {
                     </div>
                   )}
 
-                  {loading ? (
-                    <Typing text="Escuchando" />
-                  ) : (
-                    <>
                       <textarea
                         ref={textareaRef}
                         value={answer}
@@ -811,7 +683,7 @@ export default function Page() {
 
                       {dictado.error && <Note>{dictado.error}</Note>}
 
-                      {mostrarMarco && actual.tipo !== "apertura" && (
+                      {mostrarMarco && usaMarcoSara(actual.tipo) && (
                         <div
                           style={{
                             display: "flex",
@@ -833,14 +705,6 @@ export default function Page() {
                         </div>
                       )}
 
-                      {avisado && cortita && !fallo && (
-                        <Note>
-                          Esto da para un ejemplo concreto: qué pasó, qué hiciste
-                          vos y cómo terminó. Si querés, agregalo. Si no, tocá
-                          Responder otra vez.
-                        </Note>
-                      )}
-
                       {hint && <Note>{hint}</Note>}
 
                       <div
@@ -855,20 +719,13 @@ export default function Page() {
                           onClick={submit}
                           disabled={!answer.trim()}
                         >
-                          {fallo ? "Reintentar" : "Responder"}
+                          Responder
                         </PrimaryButton>
-                        <SecondaryButton
-                          onClick={getHint}
-                          disabled={hintLoading}
-                        >
-                          {hintLoading ? "Buscando…" : "No sé qué decir"}
+                        <SecondaryButton onClick={getHint}>
+                          No sé qué decir
                         </SecondaryButton>
                       </div>
-                    </>
-                  )}
                   {error && <ErrorNote>{error}</ErrorNote>}
-                </>
-              )}
             </Card>
           </>
         )}
@@ -876,84 +733,34 @@ export default function Page() {
         {/* ── devolución ── */}
         {stage === "feedback" && (
           <>
-            {cargandoComp && (
-              <Card>
-                <Typing text="Evaluando competencia por competencia" />
-              </Card>
-            )}
+            <Card>
+              <SectionTitle>
+                {nombre ? `${nombre}, terminaste` : "Terminaste"}
+              </SectionTitle>
+              <p style={{ margin: 0, fontSize: 15, lineHeight: 1.65 }}>
+                Abajo está lo que revisó el navegador y tu entrevista completa.
+                Lo que más sirve es releer tus propias respuestas: ahí se ve
+                solo lo que quedó afuera.
+              </p>
+              <div
+                style={{
+                  marginTop: 14,
+                  padding: "12px 14px",
+                  background: C.warnBg,
+                  borderLeft: `2px solid ${C.warn}`,
+                  fontSize: 14,
+                  lineHeight: 1.6,
+                  color: C.warn,
+                }}
+              >
+                Esto no es una evaluación. Es una búsqueda de palabras clave que
+                corre en tu navegador: mira si aparecen ciertas señales en el
+                texto y nada más. Si contaste algo con otras palabras, no lo va
+                a ver. No lo lee nadie ni lo revisa una inteligencia artificial.
+              </div>
+            </Card>
 
-            {fallaComp && !comp && (
-              <Card>
-                <div style={{ fontSize: 15, lineHeight: 1.6 }}>
-                  La evaluación por competencia no llegó. La entrevista completa
-                  está más abajo y la podés guardar igual.
-                </div>
-              </Card>
-            )}
-
-            {comp?.competencias && (
-              <Card>
-                <SectionTitle>
-                  {nombre
-                    ? `${nombre}, tu nivel por competencia`
-                    : "Tu nivel por competencia"}
-                </SectionTitle>
-                {comp.competencias.map((c, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      paddingBottom: 18,
-                      marginBottom: 18,
-                      borderBottom:
-                        i < comp.competencias.length - 1
-                          ? `1px solid ${C.rule}`
-                          : "none",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "baseline",
-                        gap: 12,
-                        marginBottom: 8,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <span style={{ fontWeight: 600, fontSize: 15 }}>
-                        {c.nombre}
-                      </span>
-                      <span style={{ fontSize: 13, color: C.inkSoft }}>
-                        {NIVELES[c.nivel] || ""}
-                      </span>
-                    </div>
-                    <Meter nivel={c.nivel} />
-                    <div
-                      style={{
-                        fontSize: 15,
-                        lineHeight: 1.6,
-                        margin: "12px 0 8px",
-                      }}
-                    >
-                      {c.evidencia}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        lineHeight: 1.6,
-                        padding: "10px 12px",
-                        background: C.okBg,
-                        color: C.ok,
-                      }}
-                    >
-                      {c.para_subir}
-                    </div>
-                  </div>
-                ))}
-              </Card>
-            )}
-
-            {comp?.para_practicar && (
+            {revision?.sugerencias?.length > 0 && (
               <div
                 style={{
                   background: C.page,
@@ -964,30 +771,37 @@ export default function Page() {
                 }}
               >
                 <Eyebrow>Practicá esto antes de la entrevista real</Eyebrow>
-                <div
-                  style={{
-                    fontFamily: SERIF,
-                    fontSize: "clamp(18px, 4.8vw, 21px)",
-                    lineHeight: 1.5,
-                    marginTop: 10,
-                  }}
-                >
-                  {comp.para_practicar}
-                </div>
+                {revision.sugerencias.map((s, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      fontFamily: SERIF,
+                      fontSize: "clamp(17px, 4.4vw, 20px)",
+                      lineHeight: 1.5,
+                      marginTop: 12,
+                    }}
+                  >
+                    {s}
+                  </div>
+                ))}
               </div>
             )}
 
-            {cargandoSara && !cargandoComp && (
+            {revision?.analisis?.length > 0 && (
               <Card>
-                <Typing text="Revisando respuesta por respuesta" />
-              </Card>
-            )}
-
-            {sara?.analisis && (
-              <Card>
-                <SectionTitle>Qué le faltó a cada respuesta</SectionTitle>
-                {sara.analisis.map((x, i) => (
-                  <div key={i} style={{ marginBottom: 18 }}>
+                <SectionTitle>Respuesta por respuesta</SectionTitle>
+                {revision.analisis.map((x, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      paddingBottom: 16,
+                      marginBottom: 16,
+                      borderBottom:
+                        i < revision.analisis.length - 1
+                          ? `1px solid ${C.rule}`
+                          : "none",
+                    }}
+                  >
                     <div
                       style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}
                     >
@@ -1001,10 +815,20 @@ export default function Page() {
                         marginBottom: 8,
                       }}
                     >
-                      <Tick on={x.situacion}>Situación</Tick>
-                      <Tick on={x.accion}>Acción</Tick>
-                      <Tick on={x.resultado}>Resultado</Tick>
-                      <Tick on={x.aprendizaje}>Aprendizaje</Tick>
+                      {x.marco ? (
+                        <>
+                          <Tick on={x.situacion}>Situación</Tick>
+                          <Tick on={x.accion}>Acción</Tick>
+                          <Tick on={x.resultado}>Resultado</Tick>
+                          <Tick on={x.aprendizaje}>Aprendizaje</Tick>
+                        </>
+                      ) : (
+                        x.observaciones.map((o) => (
+                          <Chip key={o} muted>
+                            {o}
+                          </Chip>
+                        ))
+                      )}
                     </div>
                     <div
                       style={{ fontSize: 14, lineHeight: 1.6, color: C.inkSoft }}
@@ -1013,79 +837,23 @@ export default function Page() {
                     </div>
                   </div>
                 ))}
-              </Card>
-            )}
-
-            {sara?.reescritura && (
-              <Card>
-                <SectionTitle>Una respuesta tuya, reescrita</SectionTitle>
-                <div
+                <p
                   style={{
-                    fontFamily: SERIF,
-                    fontSize: 17,
-                    lineHeight: 1.5,
-                    marginBottom: 18,
-                  }}
-                >
-                  {sara.reescritura.pregunta}
-                </div>
-                {[
-                  ["Situación", sara.reescritura.situacion],
-                  ["Acción", sara.reescritura.accion],
-                  ["Resultado", sara.reescritura.resultado],
-                  ["Aprendizaje", sara.reescritura.aprendizaje],
-                ].map(([k, v]) =>
-                  v ? (
-                    <div
-                      key={k}
-                      style={{
-                        marginBottom: 14,
-                        borderLeft: `2px solid ${C.margin}`,
-                        paddingLeft: 14,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: 11,
-                          letterSpacing: "0.12em",
-                          textTransform: "uppercase",
-                          color: C.inkSoft,
-                          marginBottom: 4,
-                        }}
-                      >
-                        {k}
-                      </div>
-                      <div style={{ fontSize: 15, lineHeight: 1.7 }}>{v}</div>
-                    </div>
-                  ) : null
-                )}
-                <div
-                  style={{
-                    fontSize: 14,
+                    margin: 0,
+                    fontSize: 13,
                     lineHeight: 1.6,
                     color: C.inkSoft,
-                    marginTop: 14,
                   }}
                 >
-                  {sara.reescritura.por_que}
-                </div>
+                  El marco situación / acción / resultado / aprendizaje solo se
+                  aplica a las preguntas que piden contar algo que ya te pasó.
+                  En las que arrancan con “imaginate” no hay una historia real
+                  que contar, así que ahí se mira otra cosa.
+                </p>
               </Card>
             )}
 
-            {comp?.cierre && (
-              <div
-                style={{
-                  fontFamily: SERIF,
-                  fontSize: 19,
-                  lineHeight: 1.5,
-                  padding: "8px 4px 22px",
-                }}
-              >
-                {comp.cierre}
-              </div>
-            )}
-
-            {(comp || sara || transcript.length > 0) && listo && (
+            {puedeGuardar && (
               <Card>
                 <SectionTitle>Llevate esto</SectionTitle>
                 <p
@@ -1106,7 +874,7 @@ export default function Page() {
                   <SecondaryButton onClick={descargar}>
                     Descargar archivo
                   </SecondaryButton>
-                  {lectura.soportado && (comp || sara) && (
+                  {lectura.soportado && revision && (
                     <SecondaryButton onClick={escucharDevolucion}>
                       {lectura.hablando
                         ? "Parar la lectura"
@@ -1159,13 +927,11 @@ export default function Page() {
 
             {error && <ErrorNote>{error}</ErrorNote>}
 
-            {listo && (
-              <div style={{ marginTop: 8 }}>
-                <SecondaryButton onClick={reset}>
-                  Practicar de nuevo
-                </SecondaryButton>
-              </div>
-            )}
+            <div style={{ marginTop: 8 }}>
+              <SecondaryButton onClick={reset}>
+                Practicar de nuevo
+              </SecondaryButton>
+            </div>
           </>
         )}
 
@@ -1381,19 +1147,6 @@ function Tick({ on, children }) {
   );
 }
 
-function Meter({ nivel }) {
-  return (
-    <div style={{ display: "flex", gap: 3 }} aria-label={`Nivel ${nivel} de 4`}>
-      {[1, 2, 3, 4].map((n) => (
-        <div
-          key={n}
-          style={{ height: 5, flex: 1, background: n <= nivel ? C.ink : C.rule }}
-        />
-      ))}
-    </div>
-  );
-}
-
 function PrimaryButton({ children, onClick, disabled }) {
   return (
     <button
@@ -1463,28 +1216,6 @@ function Note({ children }) {
       }}
     >
       {children}
-    </div>
-  );
-}
-
-function Typing({ text }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        color: C.inkSoft,
-        fontSize: 14,
-        padding: "6px 0",
-      }}
-    >
-      {text}
-      <span style={{ display: "inline-flex", gap: 3 }}>
-        <span className="dot">•</span>
-        <span className="dot">•</span>
-        <span className="dot">•</span>
-      </span>
     </div>
   );
 }

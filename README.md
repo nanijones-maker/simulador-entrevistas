@@ -1,49 +1,12 @@
 # Entrevista de práctica
 
-Simulador de entrevista laboral para gente que busca su primer trabajo. Ocho preguntas con formato de entrevista estructurada, repreguntas cuando la respuesta viene vaga, y devolución final por competencia.
+Simulador de entrevista laboral para gente que busca su primer trabajo. Ocho preguntas con formato de entrevista estructurada, repregunta cuando la respuesta viene muy corta, y al final una revisión de lo que quedó afuera.
 
-Se puede hacer hablando: la entrevista lee las preguntas en voz alta y las respuestas se pueden dictar. También funciona entera escribiendo.
+Se puede hacer hablando: lee las preguntas en voz alta y las respuestas se pueden dictar. También funciona entera escribiendo.
 
-Next.js 15 (App Router). Sin base de datos: nada se guarda en el servidor.
+**No necesita ninguna clave de API.** Todo corre en el navegador: las preguntas están escritas en el código y la revisión final es un análisis de texto local. No hay backend, no hay base de datos y no se llama a ningún servicio externo.
 
----
-
-## Cómo subirlo a Vercel
-
-**1. Conseguí una clave de API**
-
-Entrá a [console.anthropic.com](https://console.anthropic.com), creá una API key y cargá crédito. Es una cuenta distinta de la de claude.ai y se paga por uso.
-
-**2. Subí el código a GitHub**
-
-```bash
-cd entrevista-de-practica
-git init
-git add .
-git commit -m "primera versión"
-```
-
-Creá un repo vacío en GitHub y seguí las instrucciones que te da para conectarlo.
-
-**3. Importá el proyecto en Vercel**
-
-En [vercel.com/new](https://vercel.com/new), elegí el repo. Vercel detecta Next.js solo: no toques nada de la configuración de build.
-
-**4. Cargá la variable de entorno**
-
-Antes de darle Deploy, abrí **Environment Variables** y agregá:
-
-| Name | Value |
-|---|---|
-| `ANTHROPIC_API_KEY` | tu clave |
-
-Marcá los tres entornos (Production, Preview, Development).
-
-**5. Deploy**
-
-En un minuto tenés una URL tipo `entrevista-de-practica.vercel.app`. Ese es el link que compartís: se abre en cualquier navegador, sin cuenta y sin instalar nada.
-
-Si querés un dominio propio, se agrega desde **Settings → Domains**.
+Next.js 15 (App Router), sitio estático.
 
 ---
 
@@ -51,49 +14,60 @@ Si querés un dominio propio, se agrega desde **Settings → Domains**.
 
 ```bash
 npm install
-cp .env.example .env.local   # y pegá tu clave adentro
 npm run dev
 ```
 
-Abre en http://localhost:3000
+Abre en http://localhost:3000. No hay nada que configurar antes.
 
 ---
 
-## Lo que tenés que saber antes de compartirlo
+## Cómo subirlo
 
-**La clave nunca llega al navegador.** El front no habla con Anthropic: le pega a `/api/claude`, que corre en el servidor de Vercel y ahí sí usa la clave. Por eso hay una carpeta `app/api` y no se puede saltear. Si alguna vez ves una variable con prefijo `NEXT_PUBLIC_`, esa sí queda expuesta: la clave no va nunca ahí.
+```bash
+git push
+```
 
-**Cada entrevista te cuesta plata.** Una entrevista completa son unas once llamadas a la API. Con Sonnet quedan centavos por persona, pero se multiplica por cuánta gente entre. Poné un límite de gasto mensual en la consola de Anthropic (Settings → Limits) antes de difundir el link, así no hay sorpresas.
+Si el repo está conectado a Vercel, se despliega solo. Si lo importás por primera vez en [vercel.com/new](https://vercel.com/new), Vercel detecta Next.js y no hay que tocar nada de la configuración de build ni cargar variables de entorno.
 
-Si el volumen es alto y querés bajar el costo, cambiá el modelo por Haiku agregando la variable `CLAUDE_MODEL=claude-haiku-4-5-20251001`. Las preguntas salen algo menos afinadas, pero el ejercicio funciona igual.
+Sirve cualquier hosting de estáticos, no solo Vercel.
 
-**El endpoint es público.** Cualquiera que encuentre la URL puede usarlo. Hay tres defensas puestas:
+---
 
-- El navegador no puede elegir el prompt. Manda solo `tipo` y datos; los prompts viven en `lib/prompts.js`, que solo corre en el servidor. Nadie puede usar tu clave como un Claude genérico.
-- Hay límites de tamaño en todo lo que entra.
-- Hay un rate limit por IP en `app/api/claude/route.js`. Es best-effort: en serverless la memoria no se comparte entre instancias, así que frena lo obvio y poco más.
+## Qué hace y qué no
 
-Para algo más firme, en Vercel podés activar **Firewall → Bot protection** (Settings → Security), o mover el rate limit a Vercel KV.
+**Las preguntas son fijas.** Las mismas ocho, en el mismo orden, para todos. Eso es a propósito: así funciona una entrevista estructurada de verdad. El campo del aviso laboral es solo una referencia para que la persona lo tenga a la vista mientras practica; no cambia las preguntas.
 
-**Datos personales.** No se guarda nada: ni base de datos, ni cookies, ni logs de respuestas. Las respuestas viven en la memoria de la pestaña y se pierden al cerrarla. Por eso la devolución tiene botón de copiar y de descargar. Las respuestas sí pasan por la API de Anthropic para ser procesadas, y si se usa el dictado, el audio pasa además por el navegador (ver abajo).
+**La repregunta es una regla, no un criterio.** Si la respuesta tiene menos de `MIN_CARACTERES`, aparece una repregunta escrita de antemano. Sale una sola vez por pregunta: después se avanza sí o sí, así que nunca salen dos seguidas. Las dos partes se guardan como una sola respuesta.
 
-**Menores de edad.** Si el link va a circular entre chicos de 16 o 17, revisá los términos de uso de la API y qué te pide la normativa de datos de menores antes de difundirlo.
+**La revisión final no es una evaluación.** Busca palabras clave en el texto que la persona escribió y marca si aparecen ciertas señales: contexto, acción propia, resultado, aprendizaje. Nada más. Una respuesta buena escrita con otras palabras le pasa por al lado, y lo dice en pantalla con todas las letras. Está en `lib/revision.js` y se puede ajustar.
+
+El marco situación / acción / resultado / aprendizaje se aplica solo a las preguntas que piden contar algo que ya pasó. En las que arrancan con "imaginate" no hay historia real que contar, así que ahí se mira otra cosa.
+
+**No inventa nada.** La devolución solo puede señalar qué aparece y qué no aparece en lo escrito. No reescribe respuestas ni completa lo que falta.
 
 ---
 
 ## La voz
 
-Dos cosas separadas, las dos ya vienen en el navegador. No agregan costo de API ni una segunda clave: no pasan por Anthropic ni por tu servidor.
+Dos cosas separadas, las dos ya vienen en el navegador.
 
-**Leer en voz alta.** Botón para escuchar cada pregunta, más una casilla para que se lean solas a medida que aparecen. Al final también se puede escuchar la devolución. Anda en todos los navegadores.
+**Leer en voz alta.** Botón para escuchar cada pregunta, más una casilla para que se lean solas. Al final también se puede escuchar la devolución. Anda en todos los navegadores.
 
-**Contestar hablando.** Botón de micrófono debajo del campo: lo que se dice se va escribiendo, y siempre se puede corregir a mano antes de mandar. Necesita Chrome, Edge o Safari. **En Firefox no existe**, y en ese caso la app lo dice y deja escribir normalmente.
+**Contestar hablando.** Botón de micrófono debajo del campo: lo que se dice se va escribiendo, y siempre se puede corregir a mano. Necesita Chrome, Edge o Safari. **En Firefox no existe**, y en ese caso la app lo dice y deja escribir normalmente.
 
 Los dos se apagan entre sí: mientras el micrófono está abierto no se lee nada en voz alta, así no se escucha a sí misma.
 
-**Dónde va a parar el audio.** Esta es la letra chica que conviene tener clara, porque es la única parte del proyecto que no cumple el "no sale de tu navegador": el dictado no lo hace la app, lo hace el navegador, y Chrome manda el audio a los servidores de Google para transcribirlo (Safari, a los de Apple). No pasa por tu servidor ni por Anthropic, y vos no lo ves nunca, pero sale del dispositivo. Si el link va a circular entre menores o el tema es sensible, tenelo en cuenta: escribiendo, el audio no existe.
+**Dónde va a parar el audio.** Es la única parte que sale del dispositivo. El dictado no lo hace la app, lo hace el navegador, y Chrome manda el audio a los servidores de Google para transcribirlo (Safari, a los de Apple). Escribiendo, el audio no existe.
 
-El acento se elige solo, con esta prioridad: rioplatense primero, después el resto de América Latina, España al final. Depende de las voces que tenga instalado el sistema de cada persona.
+El acento se elige solo: rioplatense primero, después el resto de América Latina, España al final. Depende de las voces que tenga instaladas el sistema de cada persona.
+
+---
+
+## Datos personales
+
+No se guarda nada: ni base de datos, ni cookies, ni servidor que reciba las respuestas. Viven en la memoria de la pestaña y se pierden al cerrarla. Por eso la devolución tiene botón de copiar y de descargar.
+
+Como no hay backend ni clave de API, no hay costo por uso ni endpoint que alguien pueda abusar. El link se puede repartir sin más.
 
 ---
 
@@ -101,10 +75,11 @@ El acento se elige solo, con esta prioridad: rioplatense primero, después el re
 
 | Querés cambiar | Archivo |
 |---|---|
-| Las 8 competencias, el orden, los puestos | `lib/plan.js` |
-| Cómo pregunta y cómo evalúa | `lib/prompts.js` |
-| Límites, rate limit, modelo | `app/api/claude/route.js` |
+| Las 8 preguntas, repreguntas, pistas y puestos | `lib/plan.js` |
+| Cómo se revisan las respuestas al final | `lib/revision.js` |
 | La voz: acento, velocidad, dictado | `lib/voz.js` |
 | Toda la interfaz y los textos | `app/page.js` |
 
-Después de cambiar algo: `git add . && git commit -m "..." && git push`. Vercel redeploya solo.
+---
+
+Competencias adaptadas de las Career Readiness Competencies del National Association of Colleges and Employers (NACE). Formato de entrevista estructurada y preguntas conductuales y situacionales según la guía de structured interviews de la U.S. Office of Personnel Management. Esquema de respuesta situación / acción / resultado / aprendizaje, Columbia University Center for Career Education.
